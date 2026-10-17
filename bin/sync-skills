@@ -1,0 +1,17 @@
+#!/bin/sh
+# .claude/skills is the source; .agents/skills is a plain copy for other Agent Skills clients.
+# Both clients read the same text, so the copy is byte for byte.
+#   bin/sync-skills          copy .claude/skills over .agents/skills
+#   bin/sync-skills --check  exit 1 when the copies differ (CI)
+set -eu
+cd "$(dirname "$0")/.."
+if [ "${1:-}" = "--check" ]; then
+  if diff -r -x __pycache__ .claude/skills .agents/skills; then echo "skills in sync"; exit 0; fi
+  echo "skills out of sync: edit .claude/skills, then run bin/sync-skills" >&2
+  exit 1
+fi
+rm -rf .agents/skills
+mkdir -p .agents
+cp -R .claude/skills .agents/skills
+find .agents/skills -name __pycache__ -prune -exec rm -rf {} +
+echo "copied .claude/skills → .agents/skills"

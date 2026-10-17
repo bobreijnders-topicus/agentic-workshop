@@ -1,0 +1,13 @@
+name: skills
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bin/sync-skills --check
+      - run: python3 .claude/skills/foreman-start/scripts/foreman.py --help > /dev/null

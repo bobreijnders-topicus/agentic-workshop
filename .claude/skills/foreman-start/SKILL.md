@@ -12,25 +12,41 @@ Talk to the user in their language, and write the worker prompts in it too.
 
 ## 0. Preconditions
 
-- The paseo MCP tools must be available (`mcp__paseo__create_workspace`, `create_agent`,
+- The paseo MCP tools must be available (`create_workspace`, `create_agent`,
   `get_agent_status`, `get_agent_activity`, `send_agent_prompt`, `respond_to_permission`,
   `archive_workspace`, `create_heartbeat`, `delete_heartbeat`, `list_workspaces`, `list_agents`,
-  `list_profiles`, `update_agent`).
-  If they are deferred, load them with ToolSearch first.
+  `list_profiles`, `update_agent`, `rename_workspace`).
+  Your client may show them with a prefix, such as `mcp__paseo__`. Deferred? Load them first
+  (in Claude Code: with ToolSearch).
 - `git` with a remote, and `gh` authenticated for that remote.
+- `python3` and the `paseo` CLI, for the scripts below.
 - Missing one of these? Stop and say which. Don't improvise another orchestration.
 - Optional: `jira` (jira-cli) or `acli` (Atlassian CLI), for ticket status (§2). Without them the
   cycle runs the same.
 
+## The script
+
+`scripts/foreman.py`, next to this file, does the mechanical steps: finding the list, the foreman
+block, the checklist markers, the workspace name, ticket moves, the heartbeat scan, the merge check and the machine check. Call it by its absolute path, as
+`python3 <this skill's directory>/scripts/foreman.py <command>`; `--help` lists the commands.
+Write that call into the foreman block as `script:`, so heartbeats and a resumed cycle find it.
+
+Use it instead of doing these steps by hand, and don't edit the block or the markers yourself,
+except for the free-text lines (`lanes:`, `verify:` …), which you set with
+`state set`. It prints a few lines and exits 0 even when a side effect (a rename, a ticket move)
+fails: read the output and act on it. It exits non-zero only when called wrongly, for example with
+an item that matches no open line or several; the error lists the candidates.
+
 ## 1. Find the list, or resume
 
-1. An argument given? That is the TODO file.
-2. Otherwise take the newest `TODO*.md` with at least one `- [ ]` line, searching `.scratch/`
-   first, then the repo root. Say which file you picked.
-3. None found? Ask the user for the list. That is the only input you ask for.
+Run `find-todo [PATH]`. Without a path it takes the newest `TODO*.md` with at least one `- [ ]`
+line, searching `.scratch/` first, then the repo root. Say which file you picked. It finds none?
+Ask the user for the list. That is the only input you ask for.
 
-Does the file already start with a `<!-- foreman … -->` block? Then a cycle is running. Resume it:
-check every workspace listed there (step 6) before starting anything new.
+It reports `cycle: RUNNING` when the file already starts with a `<!-- foreman … -->` block. Then
+resume: run `check` (§6) and handle every listed workspace before starting anything new. Resuming
+from another workspace than the block names? Set `own workspace:` to yours with `state set` first,
+so heartbeats protect the right one. Then pick up the run's count again (§3).
 
 The list lives outside the workers' view (`.scratch/` is usually gitignored). So every worker
 prompt must be self-contained. Pass attachments such as screenshots as absolute paths.
@@ -43,20 +59,16 @@ prompt must be self-contained. Pass attachments such as screenshots as absolute 
   when paseo has no profiles (§4).
 - Find the default branch: `git remote show origin | sed -n 's/.*HEAD branch: //p'`.
   Run `git fetch` before every branch-off.
-- Find the ticket tracker. It only matters for items that name a ticket key (`ABC-123`) or a
-  Jira link, and it also covers docs-only items you do yourself.
-  - `jira me` works (or `. ~/.config/jira-cli/env && jira me` does; then load the env file before
-    every `jira` command) → `jira-cli`. A jira-cli skill present? Follow its rules.
-  - Otherwise `acli jira auth status` reports a login → `acli`.
-  - Neither → `none`. Say so once in your plan message and carry on. Don't install or log in
-    for this; that is the user's call.
+- Find the ticket tracker with `ticket detect`. It only matters for items that name a ticket key
+  (`ABC-123`), and it also covers docs-only items you do yourself. It tries jira-cli (loading
+  `~/.config/jira-cli/env` when the shell didn't), then `acli`. `none`? Say so once in your plan
+  message and carry on. Don't install or log in for this; that is the user's call.
 
-  Move a ticket with `jira issue move <KEY> "<state>"`, or with
-  `acli jira workitem transition --key <KEY> --status "<state>" --yes` (check its `--help` first).
-  The states are `In Progress` when an item starts and `Done` when its PR is merged, unless the
-  project calls them otherwise. A move to an unknown state fails, and jira-cli lists the valid
-  states in the error: take the plain equivalent, or ask the user once. A failed move never holds
-  up the cycle: say so in one line and carry on.
+  `state start` and `state done` move an item's ticket themselves, to `In Progress` and `Done`
+  unless the block's tracker line says otherwise (`start=` / `done=`). A move to an unknown state
+  fails, and the output lists the valid states: put the plain equivalent in the tracker line with
+  `state set` and retry with `ticket move <KEY> start|done --todo <TODO>`, or ask the user once.
+  A failed move never holds up the cycle: say so in one line and carry on.
 
 ## 3. Plan lanes
 
@@ -68,8 +80,10 @@ don't read the whole codebase.
   One of them would have to re-baseline blindly.
 - At most two workspaces at a time, unless the user sets another limit. At most one of them
   may be browser-heavy.
-- Before you raise the limit, look at the machine: cores, free memory, and whether /tmp is a tmpfs
-  (then it counts as RAM; caches there grow with every new worktree). Clean stale caches first.
+- Run `capacity` before you start the first workspace and before you raise the limit. It reports
+  cores, load, memory, swap, whether /tmp is a tmpfs (then it counts as RAM; caches there grow
+  with every new worktree) and suggests a limit. A warning? Clean the stale caches it lists first,
+  and keep to its suggestion.
 - Per worker, one heavy step at a time: a verification chain, a browser run or a review subagent,
   never two at once. Put that rule in every worker prompt.
 - Order within a lane: dependencies first, then the user's order.
@@ -85,6 +99,7 @@ Write the plan as a block at the top of the TODO file, and keep it current. It s
 ```
 <!-- foreman
 own workspace: <id> (never archive)
+script: python3 <absolute path>/scripts/foreman.py
 default branch: <branch> · max parallel: 2
 verify: fast=<command> · pre-merge=<command> · deploy=<command>
 lanes: A (<shared files>): <item> → <item> · B: <item> → <item>
@@ -93,8 +108,24 @@ tracker: <jira-cli | acli | none> · start=<state> · done=<state>
 -->
 ```
 
-Mark running items in the list itself: `← running: <workspace id> / agent <agent id> / <profile>`.
-Mark finished ones `- [x] … — PR #<n>`.
+Running items are marked in the list itself
+(`← running: <workspace id> / agent <agent id> / <profile>`, by `state start`), finished ones as
+`- [x] … — PR #<n>` (by `state done`). `state show` prints it all.
+
+**Your own workspace carries the run's progress in its name: `Foreman (<done>/<total>)`.**
+Keep the count yourself, in this session. Don't write it into the TODO file or anywhere else:
+the list can be a TODO file or a set of Jira tickets, and neither is the place for it.
+- `total` is the number of items this run picks up: every open item you plan, including docs-only
+  items you do yourself and items waiting on an answer from the user. Items ticked before this
+  run don't count.
+- `done` is the number of those items finished in this run (merged).
+
+Once the plan is written, run `name 0 <total>`. Run `name <done> <total>` again whenever either
+number changes (§6, §7). It finds your own workspace by its directory. A failed rename prints the
+title to set with `rename_workspace` instead; it never holds up the cycle.
+
+Lost the count (a restart, a lost context)? `name` without numbers reads your workspace's
+current name and the count in it. Carry on from there.
 
 ## 4. Start a workspace
 
@@ -110,8 +141,9 @@ Mark finished ones `- [x] … — PR #<n>`.
    Fill in the context from your own quick look: where to start, what not to touch, what follows
    in the same lane, what the user decided, the verification commands from the foreman block, and
    the open ends that merged items in this lane left for this one.
-5. Update the foreman block and the item marker, including the profile name. Move the item's
-   ticket, if it has one, to the start state (§2).
+5. `state start <TODO> <item> --ws <workspace id> --agent <agent id> --profile <profile>`. It
+   marks the item and moves its ticket, if it has one, to the start state (§2). `<item>` is its
+   ticket key or a unique piece of its text. Update `lanes:` with `state set` if the plan changed.
 
 ## 5. Timers
 
@@ -121,20 +153,24 @@ Create these with `create_heartbeat`, cadence in UTC (check `date -u`):
 - **Resume, every 5 hours** (cron `0 */5 * * *`), with the same `expiresIn` as the check. It
   catches workspaces stopped by a usage limit, however long the cycle runs. Prompt: §10 B.
 
-Every heartbeat prompt names the TODO path and your own workspace id as never-archive.
+Every heartbeat prompt names the TODO path, the script call and your own workspace id as
+never-archive. Record the heartbeat ids with `state set <TODO> heartbeats "check <id> · resume <id> (every 5 h)"`.
 Replace heartbeats when their instructions change, and delete them all when the list is done.
 
 ## 6. The loop
 
 Act on every notification and every heartbeat.
 
-**Per running workspace:** `get_agent_status` (look at `pendingPermissions`) and
-`get_agent_activity`.
+**Start with `check <TODO>`.** One call scans every running workspace: its status, pending
+permission requests, whether its workspace still exists, and for an idle worker its last message
+plus the state of the PR it names. `NO CHANGE` on the first line means all workers run and nothing
+waits on you: answer in one line. Lines starting with `!` or `*` need you. Look deeper
+(`get_agent_status`, `get_agent_activity`) only for those.
 
 - **"Finished" often means "waiting".** A worker that ends its turn while a test run or
   reviewer runs in the background is not done. It will wake up. Done means a final report with
   a merged PR, or with a merge that failed.
-- **Permission requests don't always reach you.** Check `pendingPermissions` on every heartbeat.
+- **Permission requests don't always reach you.** `check` lists them on every heartbeat.
   Inspect the target before you allow anything destructive. For example, is that path a symlink,
   or the real directory it points to? Deny what touches shared state or other checkouts.
 - **Idle and nothing running** → nudge with `send_agent_prompt`. Phrase every nudge or correction
@@ -144,18 +180,24 @@ Act on every notification and every heartbeat.
   and lower the parallel limit until memory allows it.
 - **Stopped by a usage limit** → "Continue where you left off." If resuming fails and the worktree
   holds uncommitted work, start an agent of another provider in the same workspace with a handover
-  prompt (what is done, what remains). Archive and start fresh only when the worktree is clean.
+  prompt (what is done, what remains), and record it with `state start … --agent <new id>
+  --no-ticket`, or `check` keeps watching the old agent. Archive and start fresh only when the
+  worktree is clean.
 - **Out of its depth** (circling, repeating a failed fix) → raise its model or thinking option with
-  `update_agent` (same provider only), and note the change in the item marker.
+  `update_agent` (same provider only), and note the change in the item marker by running
+  `state start` again with the new `--profile` and `--no-ticket`.
 
 **When a workspace is done:**
 
-1. Don't take the report on its word. Run `gh pr view <n> --json state,mergedAt` and skim
-   `git diff --stat` plus the key hunks on the default branch.
+1. Don't take the report on its word. Run `verify-pr <n> --todo <TODO>`: it says whether the PR
+   is merged and on the default branch, and lists the files it changed. Skim the key hunks
+   (`gh pr diff <n>`).
 2. Archive that workspace. Do this also when the merge failed, after you've captured the report.
    Its worktree and memory are needed for the next one.
-3. Tick the item with its PR number, move its ticket, if it has one, to the done state (§2), and
-   update the foreman block. A failed merge: don't tick it, and leave its ticket where it is.
+3. Merged: `state done <TODO> <item> --pr <n>`. It ticks the item with its PR number and moves
+   its ticket, if it has one, to the done state (§2). Then raise `done` by one and run
+   `name <done> <total>`. A failed merge: `state unmark <TODO> <item>` instead; the item stays
+   open, its ticket stays where it is, and the count doesn't change.
 4. Report to the user in a few lines:
    - what changed;
    - the choices the worker made;
@@ -172,7 +214,10 @@ invent a worker's result.
 ## 7. While the cycle runs
 
 - **The user adds items:** append them in the file's language under a fitting heading, slot
-  them into the lanes, and start them if a slot is free.
+  them into the lanes, and start them if a slot is free. Raise `total` by the number added and run
+  `name <done> <total>`. An item the user drops lowers `total` the same way.
+- **A docs-only item you do yourself:** once its PR is merged, `state done <TODO> <item> --pr <n>`,
+  then count it and run `name`, just as in §6.
 - **The user answers a decision:** pass it to the running worker (`send_agent_prompt`, phrased as
   a continuation, §6), or record it in the item for the one that follows. Record product
   decisions where the project keeps them.
@@ -185,7 +230,8 @@ invent a worker's result.
 
 When the last item is ticked:
 
-1. Delete your heartbeats.
+1. Delete your heartbeats. `state show` should list no open items, and your workspace should
+   read `Foreman (<total>/<total>)`.
 2. Workers don't touch the project's docs; they report what belongs there. If they reported
    anything, do one docs pass yourself, as a docs-only item, so the final check runs on the final
    tree.
@@ -238,7 +284,7 @@ of a TODO list. A foreman agent coordinates the list; you deliver this one item,
 ## Finish
 1. While building, run only targeted tests. When the diff is ready for review, run the project's
    fast check once.
-2. Start a review subagent (Agent tool) that critically reviews your diff against the item and
+2. Start a review subagent (in Claude Code: the Agent tool) that critically reviews your diff against the item and
    the project instructions. It reads the diff and may run targeted tests to prove a finding. It does
    not run the project's verification chain or browser tests. Address its findings; ask for a second
    round only if the first found something blocking.
@@ -264,20 +310,20 @@ of a TODO list. A foreman agent coordinates the list; you deliver this one item,
 **A. Check (every 10 min)**
 
 ```
-Foreman check: read the foreman block in <TODO path>. For every running workspace, run
-get_agent_status (look at pendingPermissions) and get_agent_activity. Done (a final report with
-a merged PR, or a failed merge)? Close it out per foreman-start §6 and start the next item. Stuck
-on a permission? Inspect it and answer. Idle with nothing running? Nudge it, phrased as a
-continuation. All idle at once without a report? Treat it as a daemon restart (§6). Never archive
-<own workspace id>. Don't deploy. If nothing changed, answer in one line.
+Foreman check: run `<script call> check <TODO path>`. NO CHANGE? Answer in one line. Otherwise
+handle every line marked ! or *: done (a final report with a merged PR, or a failed merge)? Close
+it out per foreman-start §6 (verify-pr, archive, state done or state unmark) and start the next
+item. Stuck on a permission? Inspect it and answer. Idle with nothing running? Nudge it, phrased
+as a continuation. All idle at once without a report? Treat it as a daemon restart (§6). Never
+archive <own workspace id>. Don't deploy.
 ```
 
 **B. Resume (every 5 h)**
 
 ```
-Foreman resume check: read the foreman block in <TODO path>. Did any running workspace stop on
+Foreman resume check: run `<script call> check <TODO path>`. Did any running workspace stop on
 a usage or token limit? Resume it with send_agent_prompt ("Continue where you left off"). If that
 fails and its worktree holds uncommitted work, start an agent of another provider in the same
-workspace with a handover prompt (what is done, what remains); archive and start fresh only when
-the worktree is clean. Then apply the check in foreman-start §6. Never archive <own workspace id>.
+workspace with a handover prompt (what is done, what remains) and record it with `state start …
+--agent <new id> --no-ticket`; archive and start fresh only when the worktree is clean. Then apply the check in foreman-start §6. Never archive <own workspace id>.
 ```

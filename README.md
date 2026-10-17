@@ -29,12 +29,20 @@ The foreman:
 - runs the deploy-level check (end-to-end tests, recordings) once at the end of the cycle.
 
 It keeps its state in a comment block at the top of the TODO file. So `/foreman-start` also
-resumes a cycle after a restart or a lost context.
+resumes a cycle after a restart or a lost context. While a cycle runs, the foreman's own
+workspace is named after the run's progress, such as `Foreman (3/7)`. The foreman keeps that
+count in its own session; it isn't stored in the TODO file or anywhere else.
+
+The mechanical steps run through one script, `scripts/foreman.py`, rather than through the
+model: picking the TODO file, writing the block and the checklist markers, renaming the workspace, moving tickets, the heartbeat scan of all workers, checking that a PR is
+really merged, and checking the machine before raising the parallel limit. Run it with `--help`
+for the commands.
 
 ### Requirements
 
 - The paseo MCP server, with workspaces, agents and heartbeats.
 - `git` with a remote, and the GitHub CLI `gh`, authenticated.
+- `python3` and the paseo CLI (`paseo`), for the script.
 - Optional: paseo agent profiles, each with notes on what it is for. Without them, the workers
   copy the foreman's own settings.
 - Optional: a `merge-to-main` skill in the workers' client. Without it, the workers merge with
@@ -42,9 +50,8 @@ resumes a cycle after a restart or a lost context.
 
 ### Install
 
-The two copies hold the same procedure. The Claude Code copy uses Claude's tool names. The
-other follows the general Agent Skills layout (`.agents/skills/`), which Kimi Code and other
-clients read.
+The two copies are identical. `.claude/skills/` is for Claude Code; `.agents/skills/` follows the
+general Agent Skills layout, which Kimi Code and other clients read.
 
 ```sh
 # Claude Code, for all projects
@@ -101,6 +108,11 @@ commit here:
 for d in .claude .agents; do gh api repos/ankitpokhrel/jira-cli/contents/llm.md \
   -H 'Accept: application/vnd.github.raw' > $d/skills/jira-cli/llm.md; done
 ```
+
+## Editing the skills
+
+Edit `.claude/skills/` only, then run `bin/sync-skills` to copy it to `.agents/skills/`.
+`bin/sync-skills --check` fails when the copies differ; CI runs it on every push.
 
 ## License
 
