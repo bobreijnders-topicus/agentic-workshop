@@ -27,13 +27,12 @@ Talk to the user in their language, and write the worker prompts in it too.
 ## The script
 
 `scripts/foreman.py`, next to this file, does the mechanical steps: finding the list, the foreman
-block, the checklist markers, the progress count and the workspace name, ticket moves, the
-heartbeat scan, the merge check and the machine check. Call it by its absolute path, as
+block, the checklist markers, the workspace name, ticket moves, the heartbeat scan, the merge check and the machine check. Call it by its absolute path, as
 `python3 <this skill's directory>/scripts/foreman.py <command>`; `--help` lists the commands.
 Write that call into the foreman block as `script:`, so heartbeats and a resumed cycle find it.
 
-Use it instead of doing these steps by hand, and don't edit the block, the markers or the progress
-line yourself, except for the free-text lines (`lanes:`, `verify:` …), which you set with
+Use it instead of doing these steps by hand, and don't edit the block or the markers yourself,
+except for the free-text lines (`lanes:`, `verify:` …), which you set with
 `state set`. It prints a few lines and exits 0 even when a side effect (a rename, a ticket move)
 fails: read the output and act on it. It exits non-zero only when called wrongly, for example with
 an item that matches no open line or several; the error lists the candidates.
@@ -47,8 +46,7 @@ Ask the user for the list. That is the only input you ask for.
 It reports `cycle: RUNNING` when the file already starts with a `<!-- foreman … -->` block. Then
 resume: run `check` (§6) and handle every listed workspace before starting anything new. Resuming
 from another workspace than the block names? Set `own workspace:` to yours with `state set` first,
-so the renames land on you. `cycle: FINISHED` means an earlier cycle ended and new items were
-added: start a new cycle as its output says.
+so heartbeats protect the right one. Then pick up the run's count again (§3).
 
 The list lives outside the workers' view (`.scratch/` is usually gitignored). So every worker
 prompt must be self-contained. Pass attachments such as screenshots as absolute paths.
@@ -110,19 +108,24 @@ tracker: <jira-cli | acli | none> · start=<state> · done=<state>
 -->
 ```
 
-Leave out `progress:`; the script writes it. Running items are marked in the list itself
+Running items are marked in the list itself
 (`← running: <workspace id> / agent <agent id> / <profile>`, by `state start`), finished ones as
 `- [x] … — PR #<n>` (by `state done`). `state show` prints it all.
 
-**Your own workspace carries the progress in its name.** Once the block is written, run
-`state init <TODO>`. It sets `progress: 0/<total>` and renames your own workspace to
-`Foreman (0/<total>)`. `total` is every open item this cycle will pick up, including docs-only
-items you do yourself and items waiting on an answer from the user; pass `--total N` when that
-differs from the open-item count. `done` counts the items ticked in this cycle. On a resume,
-`state init` keeps the existing count. Resuming a cycle that has no `progress:` line yet: pass
-`--done <n>` for the items it already ticked. `state done` and `state total` update the count and the
-name (§6, §7). A failed rename prints the title to set with `rename_workspace` instead; it never
-holds up the cycle.
+**Your own workspace carries the run's progress in its name: `Foreman (<done>/<total>)`.**
+Keep the count yourself, in this session. Don't write it into the TODO file or anywhere else:
+the list can be a TODO file or a set of Jira tickets, and neither is the place for it.
+- `total` is the number of items this run picks up: every open item you plan, including docs-only
+  items you do yourself and items waiting on an answer from the user. Items ticked before this
+  run don't count.
+- `done` is the number of those items finished in this run (merged).
+
+Once the plan is written, run `name 0 <total>`. Run `name <done> <total>` again whenever either
+number changes (§6, §7). It finds your own workspace by its directory. A failed rename prints the
+title to set with `rename_workspace` instead; it never holds up the cycle.
+
+Lost the count (a restart, a lost context)? `name` without numbers reads your workspace's
+current name and the count in it. Carry on from there.
 
 ## 4. Start a workspace
 
@@ -191,10 +194,10 @@ waits on you: answer in one line. Lines starting with `!` or `*` need you. Look 
    (`gh pr diff <n>`).
 2. Archive that workspace. Do this also when the merge failed, after you've captured the report.
    Its worktree and memory are needed for the next one.
-3. Merged: `state done <TODO> <item> --pr <n>`. It ticks the item with its PR number, raises the
-   progress count, moves its ticket, if it has one, to the done state (§2), and renames your own
-   workspace to the new `Foreman (<done>/<total>)`. A failed merge: `state unmark <TODO> <item>`
-   instead; the item stays open, its ticket stays where it is, and the name doesn't change.
+3. Merged: `state done <TODO> <item> --pr <n>`. It ticks the item with its PR number and moves
+   its ticket, if it has one, to the done state (§2). Then raise `done` by one and run
+   `name <done> <total>`. A failed merge: `state unmark <TODO> <item>` instead; the item stays
+   open, its ticket stays where it is, and the count doesn't change.
 4. Report to the user in a few lines:
    - what changed;
    - the choices the worker made;
@@ -211,10 +214,10 @@ invent a worker's result.
 ## 7. While the cycle runs
 
 - **The user adds items:** append them in the file's language under a fitting heading, slot
-  them into the lanes, and start them if a slot is free. Run `state total <TODO> +<n>`: it raises
-  the total and renames your own workspace to match. An item the user drops: `state total <TODO> -1`.
+  them into the lanes, and start them if a slot is free. Raise `total` by the number added and run
+  `name <done> <total>`. An item the user drops lowers `total` the same way.
 - **A docs-only item you do yourself:** once its PR is merged, `state done <TODO> <item> --pr <n>`,
-  just as in §6.
+  then count it and run `name`, just as in §6.
 - **The user answers a decision:** pass it to the running worker (`send_agent_prompt`, phrased as
   a continuation, §6), or record it in the item for the one that follows. Record product
   decisions where the project keeps them.
@@ -227,8 +230,8 @@ invent a worker's result.
 
 When the last item is ticked:
 
-1. Delete your heartbeats. `state show` should list no open items; the name reads
-   `Foreman (<total>/<total>)`.
+1. Delete your heartbeats. `state show` should list no open items, and your workspace should
+   read `Foreman (<total>/<total>)`.
 2. Workers don't touch the project's docs; they report what belongs there. If they reported
    anything, do one docs pass yourself, as a docs-only item, so the final check runs on the final
    tree.

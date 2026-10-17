@@ -6,17 +6,20 @@ called wrongly. A failed side effect (a ticket move, a workspace rename) is repo
 and never stops the cycle.
 
   find-todo  [PATH]                          pick the TODO file, say whether a cycle runs in it
-  state      show|init|set|start|unmark|done|total|rename  TODO ...
+  state      show|set|start|unmark|done  TODO ...
+  name       [DONE TOTAL] [--ws ID]          name the own workspace `Foreman (DONE/TOTAL)`, or read it
   ticket     detect | move KEY start|done [--todo TODO]
   check      TODO                            one scan of every running workspace
   verify-pr  N [--todo TODO]                 is PR #N really merged, and what did it change
   capacity                                   cores, memory, /tmp, running agents, a parallel limit
 
+The run's count lives only in the foreman's own session and in its workspace name; nothing here
+stores it.
+
 Needs python3, git, gh and the paseo CLI. jira (jira-cli) or acli are optional.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -114,14 +117,6 @@ class Todo:
         m = re.search(r"wks_\w+", v)
         return m.group(0) if m else (v.split()[0] if v else None)
 
-    def progress(self):
-        v = self.field("progress")
-        m = re.match(r"(\d+)\s*/\s*(\d+)", v or "")
-        return (int(m.group(1)), int(m.group(2))) if m else None
-
-    def set_progress(self, done, total):
-        self.set_line("progress", f"{done}/{max(done, total)}")
-
     # -- checklist
     def items(self):
         """[(line index, checked, text without markers, running marker or '')]"""
@@ -169,16 +164,45 @@ class Todo:
         os.replace(tmp, self.path)
 
 
-def rename_own(todo):
-    """Name the foreman's own workspace after the progress line. Never fails the caller."""
-    ws, prog = todo.own_workspace(), todo.progress()
-    if not ws or not prog:
-        return out("rename: skipped (no own workspace or no progress line in the block)")
-    title = f"Foreman ({prog[0]}/{prog[1]})"
+# ---------------------------------------------------------------------------- name
+
+NAME_RE = re.compile(r"^Foreman \((\d+)/(\d+)\)$")
+
+
+def own_workspace(ws=None):
+    """(id, current name) of the given workspace, or of the one whose cwd is this directory."""
+    workspaces, err = paseo_json(["workspace", "ls"])
+    if workspaces is None:
+        return ws, None, err
+    here = {str(Path.cwd().resolve())}
+    code, top, _ = run(["git", "rev-parse", "--show-toplevel"])
+    if code == 0:
+        here.add(str(Path(top).resolve()))
+    for w in workspaces:
+        if (ws and w.get("workspaceId") == ws) or (not ws and str(Path(w.get("cwd", "")).resolve()) in here):
+            return w.get("workspaceId"), w.get("name"), None
+    return ws, None, "no workspace with this directory as cwd" if not ws else f"{ws} not listed"
+
+
+def cmd_name(a):
+    if a.done is None:
+        ws, name, err = own_workspace(a.ws)
+        if not name:
+            return out(f"name: unknown ({err})")
+        m = NAME_RE.match(name)
+        return out(f"name: {name!r} ({ws})"
+                   + (f" → done {m.group(1)} of {m.group(2)}" if m else " → no run count in it"))
+    if a.total is None or a.done < 0 or a.total < a.done:
+        sys.exit("usage: foreman.py name DONE TOTAL (0 <= DONE <= TOTAL)")
+    title = f"Foreman ({a.done}/{a.total})"
     if os.environ.get("FOREMAN_NO_RENAME"):
-        return out(f"rename: skipped by FOREMAN_NO_RENAME, would be {title!r}")
+        return out(f"name: skipped by FOREMAN_NO_RENAME, would be {title!r}")
+    ws, _, err = (a.ws, None, None) if a.ws else own_workspace()
+    if not ws:
+        return out(f"name FAILED ({err}); use rename_workspace with title {title!r}")
     code, _, err = run(["paseo", "workspace", "rename", ws, title])
-    out(f"rename: {ws} → {title!r}" if code == 0 else f"rename FAILED ({one_line(err, 120) or f'exit {code}'}); use rename_workspace with title {title!r}")
+    out(f"name: {ws} → {title!r}" if code == 0 else
+        f"name FAILED ({one_line(err, 120) or f'exit {code}'}); use rename_workspace with title {title!r}")
 
 
 # ---------------------------------------------------------------------------- find-todo
@@ -206,14 +230,9 @@ def cmd_find_todo(a):
     out(f"todo: {t.path}",
         f"items: {open_n} open ({len(running)} running) · {len(items) - open_n} done")
     if t.block() is None:
-        out("cycle: none yet → plan lanes, write the block, then `state init`")
-    elif (p := t.progress()) and p[0] >= p[1] and not running:
-        out(f"cycle: FINISHED earlier (progress {p[0]}/{p[1]}) and the list has new open items → a new cycle: "
-            "update the block (own workspace, lanes, heartbeats) with `state set`, then `state init --force`")
+        out("cycle: none yet → plan lanes, write the block")
     else:
-        out(f"cycle: RUNNING → resume; check every listed workspace first"
-            + (f" · progress {p[0]}/{p[1]}" if p else
-               " · no progress line: `state init --done <items ticked in this cycle>`"))
+        out("cycle: a block exists → resume; check every listed workspace first")
         out(f"own workspace in the block: {t.own_workspace() or '?'} → is that you? If not, `state set` it")
     for other in cands[1:4]:
         out(f"also: {other}")
@@ -228,48 +247,18 @@ def cmd_state(a):
         if a.json:
             print(json.dumps({
                 "todo": str(t.path), "block": t.block(), "own_workspace": t.own_workspace(),
-                "progress": t.progress(),
                 "items": [{"line": i + 1, "done": d, "text": x, "running": r} for i, d, x, r in items],
             }, indent=1, ensure_ascii=False))
             return
-        p = t.progress()
-        out(f"todo: {t.path}", f"own workspace: {t.own_workspace() or '?'} · progress: "
-            + (f"{p[0]}/{p[1]}" if p else "none"))
+        out(f"todo: {t.path}", f"own workspace: {t.own_workspace() or '?'}")
         for i, d, x, r in items:
             out(f"  {'x' if d else ('>' if r else ' ')} line {i + 1}: {one_line(x, 90)}" + (f"  {r}" if r else ""))
-        return
-
-    if a.action == "init":
-        if t.block() is None:
-            sys.exit("error: write the <!-- foreman … --> block first")
-        if t.progress() and not a.force:
-            p = t.progress()
-            out(f"progress already {p[0]}/{p[1]}: this is a resume, keeping it (use --force to reset)")
-        else:
-            total = a.total if a.total is not None else a.done + sum(1 for it in t.items() if not it[1])
-            t.set_progress(a.done, total)
-            t.save()
-            out(f"progress: {a.done}/{total}")
-        rename_own(t)
         return
 
     if a.action == "set":
         t.set_line(a.key, a.value)
         t.save()
         return out(f"set {a.key}: {a.value}")
-
-    if a.action == "rename":
-        return rename_own(t)
-
-    if a.action == "total":
-        p = t.progress()
-        if not p:
-            sys.exit("error: no progress line; run `state init` first")
-        delta = int(a.delta)
-        t.set_progress(p[0], max(0, p[1] + delta))
-        t.save()
-        out(f"progress: {t.progress()[0]}/{t.progress()[1]}")
-        return rename_own(t)
 
     if a.action == "start":
         i, _, text, _ = t.find_item(a.item)
@@ -293,14 +282,9 @@ def cmd_state(a):
         if a.pr and not re.search(rf"PR #{a.pr}\b", rest):
             rest += f" — PR #{a.pr}"
         t.replace_line(i, f"{m.group(1)}x{m.group(3)}{rest}")
-        p = t.progress()
-        if p:
-            t.set_progress(p[0] + 1, p[1])
         t.save()
-        p = t.progress()
-        out(f"ticked: line {i + 1}: {one_line(rest, 80)}" + (f" · progress {p[0]}/{p[1]}" if p else ""))
-        move_item_ticket(t, text, "done", a.no_ticket)
-        return rename_own(t) if p else out("rename: skipped (no progress line; run `state init`)")
+        out(f"ticked: line {i + 1}: {one_line(rest, 80)} → count it and run `name <done> <total>`")
+        return move_item_ticket(t, text, "done", a.no_ticket)
 
 
 def move_item_ticket(t, text, which, skip):
@@ -400,21 +384,14 @@ def cmd_check(a):
             ag = re.search(r"agent\s+([0-9a-f-]{6,})", r)
             running.append((i, text, ws.group(0) if ws else None, ag.group(1) if ag else None))
     if not running:
-        p = t.progress()
-        return out("running: none" + (f" · progress {p[0]}/{p[1]}" if p else "")
-                   + " → start the next item, or finish the cycle (§8) when all are ticked")
+        return out("running: none → start the next item, or finish the cycle (§8) when all are ticked")
 
     workspaces, err = paseo_json(["workspace", "ls"])
     if workspaces is None:
         return out(f"paseo unreachable ({err}): is the daemon down? check its log, then resume (§6)")
     live_ws = {w.get("workspaceId") for w in workspaces}
 
-    snap_path = Path.home() / ".cache/foreman" / (hashlib.sha1(str(t.path).encode()).hexdigest()[:16] + ".json")
-    try:
-        prev = json.loads(snap_path.read_text())
-    except (OSError, ValueError):
-        prev = {}
-    snap, lines, idle_no_pr, actionable = {}, [], 0, False
+    lines, idle_no_pr, actionable = [], 0, False
 
     for i, text, ws, ag in running:
         label = KEY_RE.search(text).group(0) if KEY_RE.search(text) else one_line(text, 40)
@@ -430,9 +407,6 @@ def cmd_check(a):
         status = (info.get("Status") or "?").lower()
         perms = info.get("PendingPermissions") or []
         upd = info.get("UpdatedAt") or ""
-        key = f"{status}|{upd}|{len(perms)}"
-        snap[ag] = key
-        changed = prev.get(ag) != key
         ws_note = "" if ws in live_ws else " · WORKSPACE GONE (archived or lost?)"
         actionable |= bool(ws_note)
         if perms:
@@ -455,11 +429,9 @@ def cmd_check(a):
                 verdict += " → looks done: `verify-pr`, archive, `state done` (§6)"
         else:
             idle_no_pr += 1
-        lines.append(f"{'*' if changed else ' '} {label}: {status}{'' if changed else ' (unchanged)'}{ws_note}{verdict}"
+        lines.append(f"* {label}: {status}{ws_note}{verdict}"
                      f" · last: {msg or '(no text)'}")
 
-    snap_path.parent.mkdir(parents=True, exist_ok=True)
-    snap_path.write_text(json.dumps(snap))
 
     if idle_no_pr == len(running) and len(running) > 1:
         lines.append("! ALL workers idle without a PR: likely a daemon restart (check its log for an OOM), "
@@ -563,9 +535,6 @@ def main():
     p = sub.add_parser("state", help="read or change the foreman block and the checklist")
     ss = p.add_subparsers(dest="action", required=True)
     s = ss.add_parser("show"); s.add_argument("todo"); s.add_argument("--json", action="store_true")
-    s = ss.add_parser("init", help="progress <done>/<done + open items>, then rename")
-    s.add_argument("todo"); s.add_argument("--total", type=int); s.add_argument("--force", action="store_true")
-    s.add_argument("--done", type=int, default=0, help="items already ticked in this cycle (resuming an older cycle)")
     s = ss.add_parser("set", help="set one `key: value` line in the block")
     s.add_argument("todo"); s.add_argument("key"); s.add_argument("value")
     s = ss.add_parser("start", help="mark an item running, move its ticket")
@@ -574,14 +543,15 @@ def main():
     s.add_argument("--no-ticket", action="store_true")
     s = ss.add_parser("unmark", help="drop an item's running marker (failed merge, restart)")
     s.add_argument("todo"); s.add_argument("item")
-    s = ss.add_parser("done", help="tick an item, count it, move its ticket, rename")
+    s = ss.add_parser("done", help="tick an item, move its ticket")
     s.add_argument("todo"); s.add_argument("item"); s.add_argument("--pr")
     s.add_argument("--no-ticket", action="store_true")
-    s = ss.add_parser("total", help="change the item total by +N / -N, then rename")
-    s.add_argument("todo"); s.add_argument("delta")
-    s = ss.add_parser("rename", help="re-apply the workspace name from the progress line")
-    s.add_argument("todo")
     p.set_defaults(fn=cmd_state)
+
+    p = sub.add_parser("name", help="name the own workspace `Foreman (DONE/TOTAL)`, or read the name")
+    p.add_argument("done", nargs="?", type=int); p.add_argument("total", nargs="?", type=int)
+    p.add_argument("--ws", help="workspace id; default: the one whose cwd is this directory")
+    p.set_defaults(fn=cmd_name)
 
     p = sub.add_parser("ticket", help="detect the tracker, or move a ticket")
     p.add_argument("action", choices=["detect", "move"])

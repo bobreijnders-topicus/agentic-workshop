@@ -30,11 +30,11 @@ The foreman:
 
 It keeps its state in a comment block at the top of the TODO file. So `/foreman-start` also
 resumes a cycle after a restart or a lost context. While a cycle runs, the foreman's own
-workspace is named after its progress, such as `Foreman (3/7)`.
+workspace is named after the run's progress, such as `Foreman (3/7)`. The foreman keeps that
+count in its own session; it isn't stored in the TODO file or anywhere else.
 
 The mechanical steps run through one script, `scripts/foreman.py`, rather than through the
-model: picking the TODO file, writing the block and the checklist markers, counting progress and
-renaming the workspace, moving tickets, the heartbeat scan of all workers, checking that a PR is
+model: picking the TODO file, writing the block and the checklist markers, renaming the workspace, moving tickets, the heartbeat scan of all workers, checking that a PR is
 really merged, and checking the machine before raising the parallel limit. Run it with `--help`
 for the commands.
 
