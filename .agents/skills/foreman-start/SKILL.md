@@ -15,7 +15,7 @@ Talk to the user in their language, and write the worker prompts in it too.
 - The paseo MCP tools must be available (`create_workspace`, `create_agent`,
   `get_agent_status`, `get_agent_activity`, `send_agent_prompt`, `respond_to_permission`,
   `archive_workspace`, `create_heartbeat`, `delete_heartbeat`, `list_workspaces`, `list_agents`,
-  `list_profiles`, `update_agent`).
+  `list_profiles`, `update_agent`, `rename_workspace`).
   Your client may show them with a prefix, such as `mcp__paseo__`.
 - `git` with a remote, and `gh` authenticated for that remote.
 - Missing one of these? Stop and say which. Don't improvise another orchestration.
@@ -88,6 +88,7 @@ own workspace: <id> (never archive)
 default branch: <branch> · max parallel: 2
 verify: fast=<command> · pre-merge=<command> · deploy=<command>
 lanes: A (<shared files>): <item> → <item> · B: <item> → <item>
+progress: <done>/<total>
 heartbeats: check <id> · resume <id> (every 5 h)
 tracker: <jira-cli | acli | none> · start=<state> · done=<state>
 -->
@@ -95,6 +96,14 @@ tracker: <jira-cli | acli | none> · start=<state> · done=<state>
 
 Mark running items in the list itself: `← running: <workspace id> / agent <agent id> / <profile>`.
 Mark finished ones `- [x] … — PR #<n>`.
+
+**Name your own workspace after the progress.** Once the plan is written, rename your own
+workspace with `rename_workspace` (no `workspaceId`) to `Foreman (<done>/<total>)`, starting at
+`Foreman (0/<total>)`. `total` is the number of open items this cycle will pick up, including
+docs-only items you do yourself and items waiting on an answer from the user; `done` counts the
+items ticked in this cycle. Keep both in the `progress:` line of the foreman block, so a resumed
+cycle continues the count instead of recounting the file. Rename again whenever either number
+changes (§6, §7). A failed rename never holds up the cycle.
 
 ## 4. Start a workspace
 
@@ -155,7 +164,9 @@ Act on every notification and every heartbeat.
 2. Archive that workspace. Do this also when the merge failed, after you've captured the report.
    Its worktree and memory are needed for the next one.
 3. Tick the item with its PR number, move its ticket, if it has one, to the done state (§2), and
-   update the foreman block. A failed merge: don't tick it, and leave its ticket where it is.
+   update the foreman block. Raise `done` in `progress:` and rename your own workspace to the new
+   `Foreman (<done>/<total>)` (§3). A failed merge: don't tick it, leave its ticket where it is,
+   and leave the name as it is.
 4. Report to the user in a few lines:
    - what changed;
    - the choices the worker made;
@@ -172,7 +183,10 @@ invent a worker's result.
 ## 7. While the cycle runs
 
 - **The user adds items:** append them in the file's language under a fitting heading, slot
-  them into the lanes, and start them if a slot is free.
+  them into the lanes, and start them if a slot is free. Raise `total` in `progress:` and rename
+  your own workspace to match (§3). An item the user drops lowers it the same way.
+- **A docs-only item you do yourself:** once its PR is merged, tick it and update the progress and
+  the name just as in §6.
 - **The user answers a decision:** pass it to the running worker (`send_agent_prompt`, phrased as
   a continuation, §6), or record it in the item for the one that follows. Record product
   decisions where the project keeps them.
