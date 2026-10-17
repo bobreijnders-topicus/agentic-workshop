@@ -7,6 +7,7 @@ description: Work through a TODO checklist as the foreman. Every open item gets 
 
 You coordinate; the workspaces build. You do not implement code items yourself. The exception is
 a docs-only item: do it yourself on a short branch, open a PR and merge it, instead of spending a slot.
+It follows the same branch, commit and ticket-comment rules as a worker item (§2, §6).
 
 Talk to the user in their language, and write the worker prompts in it too.
 
@@ -19,8 +20,8 @@ Talk to the user in their language, and write the worker prompts in it too.
   If they are deferred, load them with ToolSearch first.
 - `git` with a remote, and `gh` authenticated for that remote.
 - Missing one of these? Stop and say which. Don't improvise another orchestration.
-- Optional: `jira` (jira-cli) or `acli` (Atlassian CLI), for ticket status (§2). Without them the
-  cycle runs the same.
+- Optional: `jira` (jira-cli) or `acli` (Atlassian CLI), for ticket status and comments (§2).
+  Without them the cycle runs the same.
 
 ## 1. Find the list, or resume
 
@@ -57,6 +58,27 @@ prompt must be self-contained. Pass attachments such as screenshots as absolute 
   project calls them otherwise. A move to an unknown state fails, and jira-cli lists the valid
   states in the error: take the plain equivalent, or ask the user once. A failed move never holds
   up the cycle: say so in one line and carry on.
+
+  Comment on a ticket with `jira issue comment add <KEY> "<body>" --no-input`, or with
+  `acli jira workitem comment create --key <KEY> --body "<body>"` (check its `--help` first).
+  Comments go out at fixed moments only (§6, §7), in the ticket's language, short and factual:
+  - **Decisions**: what was chosen and why, by the worker or by the user.
+  - **Open considerations**: what remains, trade-offs, knobs to tune, follow-up candidates.
+  - **Outcomes**: the PR and whether it is merged, what changed, how to check it.
+  Never put secrets, tokens or internal paths in a comment. A failed comment is like a failed
+  move: one line, and carry on. With tracker `none`, the same content stays in your report.
+
+### Ticket keys in git
+
+An item with a ticket key carries that key into git:
+- **Branch:** `<kind>/<KEY>-<short-slug>`, e.g. `feature/ABC-123-export-csv`.
+- **Commits:** [Conventional Commits](https://www.conventionalcommits.org) with the key as scope:
+  `<type>(<KEY>): <summary>`, e.g. `feat(ABC-123): add CSV export`. Types: `feat`, `fix`,
+  `docs`, `refactor`, `test`, `perf`, `build`, `ci`, `chore`, `style`. A breaking change gets `!`
+  after the scope, e.g. `feat(ABC-123)!: …`.
+- **PR title:** the same form as the main commit.
+
+An item without a key still uses Conventional Commits, with a plain scope or none.
 
 ## 3. Plan lanes
 
@@ -99,7 +121,8 @@ Mark finished ones `- [x] … — PR #<n>`.
 ## 4. Start a workspace
 
 1. `create_workspace`: `isolation: worktree`, `mode: branch-off`, `baseBranch: origin/<default>`,
-   a descriptive `branchName` (`feature/…`, `fix/…`, `tweak/…`), and a short title.
+   a descriptive `branchName` (`feature/…`, `fix/…`, `tweak/…`; with the ticket key, see
+   "Ticket keys in git"), and a short title.
 2. Check the worktree's `git log -1` against `origin/<default>`.
 3. Pick a paseo profile for this item. Run `list_profiles` each time, because the user edits them.
    Choose the profile whose `notes` best fit the item's kind and weight. No profiles? Use your own
@@ -109,7 +132,7 @@ Mark finished ones `- [x] … — PR #<n>`.
    and `modeId`. A worker can't wait for approvals: if that mode prompts for them, use `auto`.
    Fill in the context from your own quick look: where to start, what not to touch, what follows
    in the same lane, what the user decided, the verification commands from the foreman block, and
-   the open ends that merged items in this lane left for this one.
+   the open ends that merged items in this lane left for this one, and the ticket key.
 5. Update the foreman block and the item marker, including the profile name. Move the item's
    ticket, if it has one, to the start state (§2).
 
@@ -156,6 +179,8 @@ Act on every notification and every heartbeat.
    Its worktree and memory are needed for the next one.
 3. Tick the item with its PR number, move its ticket, if it has one, to the done state (§2), and
    update the foreman block. A failed merge: don't tick it, and leave its ticket where it is.
+   Either way, post one comment on the ticket (§2) from the verified report: the decisions, the
+   open considerations and the outcome (PR, merged or not and why).
 4. Report to the user in a few lines:
    - what changed;
    - the choices the worker made;
@@ -175,7 +200,8 @@ invent a worker's result.
   them into the lanes, and start them if a slot is free.
 - **The user answers a decision:** pass it to the running worker (`send_agent_prompt`, phrased as
   a continuation, §6), or record it in the item for the one that follows. Record product
-  decisions where the project keeps them.
+  decisions where the project keeps them, and post the decision as a comment on the item's
+  ticket (§2).
 - **Deploying:** only when the user asks. Use the project's deploy procedure if it has one, and
   verify that what is live is the build you made.
 - **A test run fails on the environment** (full disk, overloaded machine), not on the code:
@@ -210,6 +236,7 @@ of a TODO list. A foreman agent coordinates the list; you deliver this one item,
 
 ## The item
 <item text, verbatim, plus absolute paths of attachments>
+Ticket: <KEY, or "none">
 
 ## Context from the foreman
 - <where to start: files, modules, earlier PRs on this subject>
@@ -234,6 +261,10 @@ of a TODO list. A foreman agent coordinates the list; you deliver this one item,
 - Don't write to the user's memory, docs or other shared notes. Put what's worth keeping in your
   report; the foreman decides where it goes.
 - Don't deploy. You can't ask the user anything: make a defensible choice and report it.
+- Git naming: your branch is <branch name>. Every commit is a Conventional Commit with the
+  ticket key as scope: `<type>(<KEY>): <summary>`, e.g. `fix(<KEY>): …`. No ticket: a plain
+  scope or none. The PR title takes the same form as your main commit.
+- Don't comment on or move the ticket yourself; the foreman does that from your report.
 
 ## Finish
 1. While building, run only targeted tests. When the diff is ready for review, run the project's
@@ -252,8 +283,8 @@ of a TODO list. A foreman agent coordinates the list; you deliver this one item,
    through a failing check.
 5. End with a short report:
    - the PR number and whether it is merged;
-   - the choices you made;
-   - the knobs to tune;
+   - the decisions you made, and why;
+   - the open considerations: what remains, trade-offs, knobs to tune;
    - how the user checks it live;
    - anything you found outside this item, and anything worth keeping for docs or memory.
    If merging failed, say so explicitly, with the reason.
