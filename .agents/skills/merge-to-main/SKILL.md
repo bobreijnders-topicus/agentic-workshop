@@ -15,7 +15,7 @@ Six steps, in this order. Each step gates the next; skip none.
 - Find the default branch, called `<default>` below:
 
 ```bash
-git remote show origin | sed -n 's/.*HEAD branch: //p'
+gh repo view --json defaultBranchRef -q .defaultBranchRef.name
 ```
 
 ## 1. Stop if you are on the default branch
@@ -114,4 +114,4 @@ can't read from the PR diff alone. No longer report: the PR and the merge commit
   is enough after step 4.
 - Don't merge with `--no-verify` or skip hooks.
 - Don't go on to step 5 while step 4 left a file with conflict markers.
-- Don't delete the branch, and never push to the default branch directly.
+- Don't delete the branch, and never force-push to the default branch.

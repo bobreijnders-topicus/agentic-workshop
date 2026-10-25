@@ -56,15 +56,18 @@ each skill to this checkout, so every client reads the same files and a `git pul
 
 ```sh
 REPO=$PWD   # this checkout
-mkdir -p ~/.claude/skills ~/.agents/skills
-for s in foreman-start merge-to-main; do
-  ln -s "$REPO/.agents/skills/$s" ~/.claude/skills/$s   # Claude Code
-  ln -s "$REPO/.agents/skills/$s" ~/.agents/skills/$s   # Codex, Kimi Code, other clients
+# ~/.claude/skills for Claude Code; ~/.agents/skills for Codex, Kimi Code and other clients
+for d in ~/.claude/skills ~/.agents/skills; do
+  mkdir -p "$d"
+  for s in foreman-start merge-to-main; do
+    if [ -e "$d/$s" ] || [ -L "$d/$s" ]; then echo "$d/$s exists: remove it first"; continue; fi
+    ln -s "$REPO/.agents/skills/$s" "$d/$s"
+  done
 done
 ```
 
-An earlier copy in the way? Remove it first; `ln -s` won't replace a directory. For a single
-project, link the folder into that project's `.claude/skills/` or `.agents/skills/` instead.
+The check matters: `ln -s` onto an existing folder puts the link inside it. For a single project,
+link the folder into that project's `.claude/skills/` or `.agents/skills/` instead.
 Start a new session afterwards so the skill is picked up.
 
 ### Use
