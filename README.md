@@ -6,7 +6,8 @@ Skills for running coding agents as a team.
 
 One agent acts as the **foreman** over a markdown TODO checklist. Every open item gets its own
 [paseo](https://paseo.sh) workspace: a git worktree off the default branch, with
-its own agent. At most two workspaces run at a time.
+its own agent. At most three workspaces run at a time, fewer when the machine's free RAM or the project's
+instructions call for it.
 
 Each workspace does the whole job itself:
 - implement the item;
@@ -18,6 +19,8 @@ Each workspace does the whole job itself:
 
 The foreman:
 - plans the order by **file conflict**, so parallel workspaces never edit the same files;
+- checks the free RAM before it starts, to see how many workspaces fit, and lets the project's
+  instructions lower that: note heavy test stages or machine limits in `CLAUDE.md` or `AGENTS.md`;
 - reads the project's verification stages and names the right command in every prompt, so each
   stage runs once, when it proves something new;
 - writes self-contained prompts;
@@ -35,7 +38,7 @@ count in its own session; it isn't stored in the TODO file or anywhere else.
 
 The mechanical steps run through one script, `scripts/foreman.py`, rather than through the
 model: picking the TODO file, writing the block and the checklist markers, renaming the workspace, moving tickets, the heartbeat scan of all workers, checking that a PR is
-really merged, and checking the machine before raising the parallel limit. Run it with `--help`
+really merged, and checking the machine's free RAM, which sets the parallel limit (at most three, about 1.5 GiB each). Run it with `--help`
 for the commands.
 
 ### Requirements

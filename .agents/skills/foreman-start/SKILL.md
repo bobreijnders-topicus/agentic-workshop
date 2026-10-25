@@ -1,6 +1,6 @@
 ---
 name: foreman-start
-description: Work through a TODO checklist as the foreman. Every open item gets its own paseo workspace (a git worktree off the default branch), at most two at a time. Each workspace reviews and merges its own work; the foreman schedules by file conflict, watches with heartbeats, closes workspaces out, ticks items off and reports to the user. Use for "/foreman-start", "be the foreman", "voorman", "work through this TODO list with workspaces", and to resume a foreman cycle after a restart or context loss.
+description: Work through a TODO checklist as the foreman. Every open item gets its own paseo workspace (a git worktree off the default branch), at most three at a time, fewer when the machine's free RAM or the project's instructions say so. Each workspace reviews and merges its own work; the foreman schedules by file conflict, watches with heartbeats, closes workspaces out, ticks items off and reports to the user. Use for "/foreman-start", "be the foreman", "voorman", "work through this TODO list with workspaces", and to resume a foreman cycle after a restart or context loss.
 ---
 
 # Foreman
@@ -78,12 +78,17 @@ don't read the whole codebase.
 
 - Never run two items at once that each change behaviour guarded by snapshot or golden tests.
   One of them would have to re-baseline blindly.
-- At most two workspaces at a time, unless the user sets another limit. At most one of them
+- At most three workspaces at a time, unless the user sets another limit. At most one of them
   may be browser-heavy.
 - Run `capacity` before you start the first workspace and before you raise the limit. It reports
-  cores, load, memory, swap, whether /tmp is a tmpfs (then it counts as RAM; caches there grow
-  with every new worktree) and suggests a limit. A warning? Clean the stale caches it lists first,
-  and keep to its suggestion.
+  cores, load, the memory available now (about 1.5 GiB per worker), swap, whether /tmp is a tmpfs
+  (then it counts as RAM; caches there grow with every new worktree) and suggests a limit of at
+  most three. A warning? Clean the stale caches it lists first, and keep to its suggestion.
+- The project may deviate from that: heavy test stages, a browser suite, a build that needs
+  several GiB, or limits of the machine it runs on. Read the project instructions (CLAUDE.md,
+  AGENTS.md) for such notes before you settle the limit. They win over `capacity`: lower the limit
+  or keep the heavy stage to one workspace at a time, and put the rule in the foreman block and in
+  every worker prompt. A project that says nothing about it gets `capacity`'s suggestion.
 - Per worker, one heavy step at a time: a verification chain, a browser run or a review subagent,
   never two at once. Put that rule in every worker prompt.
 - Order within a lane: dependencies first, then the user's order.
@@ -100,7 +105,7 @@ Write the plan as a block at the top of the TODO file, and keep it current. It s
 <!-- foreman
 own workspace: <id> (never archive)
 script: python3 <absolute path>/scripts/foreman.py
-default branch: <branch> · max parallel: 2
+default branch: <branch> · max parallel: <1-3, from capacity and the project instructions>
 verify: fast=<command> · pre-merge=<command> · deploy=<command>
 lanes: A (<shared files>): <item> → <item> · B: <item> → <item>
 heartbeats: check <id> · resume <id> (every 5 h)
@@ -239,7 +244,8 @@ When the last item is ticked:
    read `Foreman (<total>/<total>)`.
 2. Workers don't touch the project's docs; they report what belongs there. If they reported
    anything, do one docs pass yourself, as a docs-only item, so the final check runs on the final
-   tree.
+   tree. A step that proved too heavy for the machine (an OOM, a stalled run) belongs there too:
+   propose a note in the project instructions, so the next foreman plans around it.
 3. Run the project's deploy-level verification (`deploy=` in the foreman block, e.g. end-to-end
    tests and recordings) once, on an up-to-date default branch. That is the one moment for it.
    A failure on the code is a candidate item: propose it, don't fix it yourself.

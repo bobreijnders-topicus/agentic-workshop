@@ -507,6 +507,10 @@ def meminfo():
     return info
 
 
+DEFAULT_PARALLEL = 3
+WORKER_GIB = 1.5  # one worker with a dev server, tests and a browser needs about a core and this much RAM
+
+
 def cmd_capacity(a):
     cores = os.cpu_count() or 1
     mem = meminfo()
@@ -519,8 +523,8 @@ def cmd_capacity(a):
     agents, _ = paseo_json(["ls", "-g"])
     busy = sum(1 for x in agents or [] if x.get("status") == "running")
 
-    # One worker with a dev server, tests and a browser needs about a core and 1.5 GiB.
-    fit = max(1, min(cores, int(total / 1.5)))
+    # Size on the memory that is free now, not the total: other processes already hold their share.
+    fit = max(1, min(cores, int(avail / WORKER_GIB)))
     out(f"cores: {cores} · load(1m): {load:.1f} · running agents: {busy if agents is not None else '?'}",
         f"memory: {total:.1f} GiB total, {avail:.1f} GiB available · swap used: {swap_used:.1f} GiB",
         f"/tmp: {'tmpfs (counts as RAM)' if tmp_tmpfs else fstype or '?'} · "
@@ -536,8 +540,9 @@ def cmd_capacity(a):
         warn.append("/tmp is over half full and lives in RAM")
     if warn:
         out("warning: " + "; ".join(warn) + " → clean stale caches, keep the limit low")
-    suggest = 1 if warn else min(2, fit)
-    out(f"parallel: suggest {suggest}" + (f" (the machine fits {fit}; raise only when the user asks)" if fit > 2 else ""))
+    suggest = 1 if warn else min(DEFAULT_PARALLEL, fit)
+    out(f"parallel: suggest {suggest}" + (f" (the machine fits {fit}; raise only when the user asks)" if fit > DEFAULT_PARALLEL else "")
+        + " · project instructions may lower it")
     if a.caches or warn:
         code, so, _ = run("du -sxm /tmp/* /tmp/.[!.]* 2>/dev/null | sort -rn | head -5", shell=True, timeout=20)
         if so:
