@@ -28,6 +28,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 BLOCK_RE = re.compile(r"<!--\s*foreman\b(.*?)-->", re.S)
@@ -36,6 +37,9 @@ RUNNING_RE = re.compile(r"\s*← running:.*$")
 KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 OWN_KEY_RE = re.compile(r"^\W*([A-Z][A-Z0-9]+-\d+)\b|/browse/([A-Z][A-Z0-9]+-\d+)\b")
 JIRA_ENV = Path.home() / ".config/jira-cli/env"
+# Codex's auto-reviewer denies escalations without a paseo permission request; a Codex worker
+# running this long without an update may be stuck on one.
+CODEX_SILENT_MINUTES = 15
 
 
 def out(*lines):
@@ -375,6 +379,17 @@ def last_text(agent):
     return one_line(so, 400) if code == 0 else ""
 
 
+def minutes_since(iso):
+    """Whole minutes since an ISO timestamp such as paseo's `UpdatedAt`, or None if unreadable."""
+    try:
+        then = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    if then.tzinfo is None:
+        return None
+    return int((datetime.now(timezone.utc) - then).total_seconds() // 60)
+
+
 def cmd_check(a):
     t = Todo(a.todo)
     running = []
@@ -405,6 +420,7 @@ def cmd_check(a):
             actionable = True
             continue
         status = (info.get("Status") or "?").lower()
+        provider = (info.get("Provider") or "?").lower()
         perms = info.get("PendingPermissions") or []
         upd = info.get("UpdatedAt") or ""
         ws_note = "" if ws in live_ws else " · WORKSPACE GONE (archived or lost?)"
@@ -412,10 +428,17 @@ def cmd_check(a):
         if perms:
             actionable = True
             for p in perms:
-                lines.append(f"! {label}: PERMISSION pending · {one_line(json.dumps(p, ensure_ascii=False), 300)}"
+                lines.append(f"! {label} ({provider}): PERMISSION pending · {one_line(json.dumps(p, ensure_ascii=False), 300)}"
                              " → inspect the target, then respond_to_permission")
         if status == "running":
-            lines.append(f"{'!' if ws_note else ' '} {label}: running (last update {upd[11:16]}Z){ws_note}")
+            silent = minutes_since(upd)
+            stall = ""
+            if provider == "codex" and silent is not None and silent > CODEX_SILENT_MINUTES:
+                actionable = True
+                stall = (f" · no update for {silent} min: may be waiting on auto-review (a denial"
+                         " doesn't reach paseo) → get_agent_activity, then nudge (§6)")
+            mark = "!" if ws_note else "*" if stall else " "
+            lines.append(f"{mark} {label}: running ({provider}, {upd[11:16]}Z){ws_note}{stall}")
             continue
         actionable = True
         msg = last_text(ag)
@@ -429,7 +452,7 @@ def cmd_check(a):
                 verdict += " → looks done: `verify-pr`, archive, `state done` (§6)"
         else:
             idle_no_pr += 1
-        lines.append(f"* {label}: {status}{ws_note}{verdict}"
+        lines.append(f"* {label}: {status} ({provider}){ws_note}{verdict}"
                      f" · last: {msg or '(no text)'}")
 
 

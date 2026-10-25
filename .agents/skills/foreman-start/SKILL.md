@@ -16,8 +16,8 @@ Talk to the user in their language, and write the worker prompts in it too.
   `get_agent_status`, `get_agent_activity`, `send_agent_prompt`, `respond_to_permission`,
   `archive_workspace`, `create_heartbeat`, `delete_heartbeat`, `list_workspaces`, `list_agents`,
   `list_profiles`, `update_agent`, `rename_workspace`).
-  Your client may show them with a prefix, such as `mcp__paseo__`. Deferred? Load them first
-  (in Claude Code: with ToolSearch).
+  Your client may show them with a prefix, for example `mcp__paseo__`. Deferred? Load them first,
+  the way your client loads deferred tools.
 - `git` with a remote, and `gh` authenticated for that remote.
 - `python3` and the `paseo` CLI, for the scripts below.
 - Missing one of these? Stop and say which. Don't improvise another orchestration.
@@ -90,9 +90,9 @@ don't read the whole codebase.
 - An item so big that it holds up a lane: split it by the files each half touches, so the halves
   can run side by side.
 - Items that only an answer from the user can unblock wait. Ask, and plan around them.
-- Find out which verification stages the project has (`package.json` scripts, CLAUDE.md) and
-  record them in the foreman block. Then every worker prompt names the right command instead of
-  "full verification". A project with fewer stages leaves the rest out.
+- Find out which verification stages the project has (`package.json` scripts, CLAUDE.md or
+  AGENTS.md) and record them in the foreman block. Then every worker prompt names the right
+  command instead of "full verification". A project with fewer stages leaves the rest out.
 
 Write the plan as a block at the top of the TODO file, and keep it current. It survives context loss:
 
@@ -137,10 +137,15 @@ current name and the count in it. Carry on from there.
    agent's settings. A choice the user states always wins.
 4. `create_agent` in that workspace with the template in §9. Pass the profile's
    `<provider>/<model>` as `provider`, plus its `thinkingOptionId`, `featureValues` (as `features`)
-   and `modeId`. A worker can't wait for approvals: if that mode prompts for them, use `auto`.
+   and `modeId`. A worker can't wait for approvals: if that mode prompts for them, use Claude →
+   `auto`; Codex → `auto-review` (or what the profile says); Kimi → `auto` with `auto_accept`.
+   Codex's auto-reviewer decides escalations itself, and a denial never reaches you as a paseo
+   permission request: a Codex worker that stays `running` long without an update may be stuck
+   on one.
    Fill in the context from your own quick look: where to start, what not to touch, what follows
    in the same lane, what the user decided, the verification commands from the foreman block, and
-   the open ends that merged items in this lane left for this one.
+   the open ends that merged items in this lane left for this one. A non-Claude worker doesn't see
+   your memory: give it the project lessons that live only there.
 5. `state start <TODO> <item> --ws <workspace id> --agent <agent id> --profile <profile>`. It
    marks the item and moves its ticket, if it has one, to the start state (§2). `<item>` is its
    ticket key or a unique piece of its text. Update `lanes:` with `state set` if the plan changed.
@@ -179,10 +184,10 @@ waits on you: answer in one line. Lines starting with `!` or `*` need you. Look 
   its log for an OOM). Uncommitted work survives in the worktrees. Resume each with what was running
   and lower the parallel limit until memory allows it.
 - **Stopped by a usage limit** → "Continue where you left off." If resuming fails and the worktree
-  holds uncommitted work, start an agent of another provider in the same workspace with a handover
-  prompt (what is done, what remains), and record it with `state start … --agent <new id>
-  --no-ticket`, or `check` keeps watching the old agent. Archive and start fresh only when the
-  worktree is clean.
+  holds uncommitted work, start an agent of another provider (e.g. Claude ↔ Codex; the profile
+  notes say which) in the same workspace with a handover prompt (what is done, what remains), and
+  record it with `state start … --agent <new id> --no-ticket`, or `check` keeps watching the old
+  agent. Archive and start fresh only when the worktree is clean.
 - **Out of its depth** (circling, repeating a failed fix) → raise its model or thinking option with
   `update_agent` (same provider only), and note the change in the item marker by running
   `state start` again with the new `--profile` and `--no-ticket`.

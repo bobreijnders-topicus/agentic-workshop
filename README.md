@@ -45,24 +45,27 @@ for the commands.
 - `python3` and the paseo CLI (`paseo`), for the script.
 - Optional: paseo agent profiles, each with notes on what it is for. Without them, the workers
   copy the foreman's own settings.
-- Optional: a `merge-to-main` skill in the workers' client. Without it, the workers merge with
-  plain `gh`.
+- Optional: the `merge-to-main` skill below, in the workers' client. Without it, the workers merge
+  with plain `gh`.
 
 ### Install
 
-The two copies are identical. `.claude/skills/` is for Claude Code; `.agents/skills/` follows the
-general Agent Skills layout, which Kimi Code and other clients read.
+The skills live in `.agents/skills/`, the general Agent Skills layout that Codex, Kimi Code and
+other clients read. `.claude/skills` is a symlink to it, for Claude Code. Install by symlinking
+each skill to this checkout, so every client reads the same files and a `git pull` updates them:
 
 ```sh
-# Claude Code, for all projects
-cp -r .claude/skills/foreman-start ~/.claude/skills/
-
-# Kimi Code or another Agent Skills client, for all projects
-mkdir -p ~/.agents/skills && cp -r .agents/skills/foreman-start ~/.agents/skills/
+REPO=$PWD   # this checkout
+mkdir -p ~/.claude/skills ~/.agents/skills
+for s in foreman-start merge-to-main; do
+  ln -s "$REPO/.agents/skills/$s" ~/.claude/skills/$s   # Claude Code
+  ln -s "$REPO/.agents/skills/$s" ~/.agents/skills/$s   # Codex, Kimi Code, other clients
+done
 ```
 
-For a single project, copy the folder into that project's `.claude/skills/` or `.agents/skills/`
-instead. Start a new session afterwards so the skill is picked up.
+An earlier copy in the way? Remove it first; `ln -s` won't replace a directory. For a single
+project, link the folder into that project's `.claude/skills/` or `.agents/skills/` instead.
+Start a new session afterwards so the skill is picked up.
 
 ### Use
 
@@ -85,6 +88,13 @@ While it runs you can:
 - answer the decisions it brings up;
 - ask it to deploy. It never deploys on its own.
 
+## merge-to-main
+
+Gets the current branch or worktree into the default branch: commit open work, merge the default
+branch in, resolve conflicts, open a PR, wait for its checks and merge it. Plain `git` and `gh`, so
+any client can run it. The foreman's workers use it to merge their own work. Install it like
+`foreman-start` above.
+
 ## jira-cli
 
 Gets an agent working with Jira through [jira-cli](https://github.com/ankitpokhrel/jira-cli), the
@@ -97,22 +107,29 @@ Gets an agent working with Jira through [jira-cli](https://github.com/ankitpokhr
 - picks the right Jira project when you have more than one;
 - downloads ticket attachments such as screenshots, which neither `jira-cli` nor Atlassian's `acli` can.
 
-Needs `curl` (Linux install, attachments), `python3` (attachments), and a Jira API token. Install it like `foreman-start` above,
-with `jira-cli` as the folder. Then ask about a ticket, or run `/jira-cli`.
+Needs `curl` (Linux install, attachments), `python3` (attachments), and a Jira API token. Install
+it like `foreman-start` above, with `jira-cli` as the folder. Then ask about a ticket, or run `/jira-cli`.
 
 `llm.md` is an unmodified copy of upstream's, taken at commit `e74646e` (22 Sep 2026). It is kept
-in the skill so nothing depends on GitHub at run time. To refresh both copies, then update the
-commit here:
+in the skill so nothing depends on GitHub at run time. To refresh it, then update the commit
+here:
 
 ```sh
-for d in .claude .agents; do gh api repos/ankitpokhrel/jira-cli/contents/llm.md \
-  -H 'Accept: application/vnd.github.raw' > $d/skills/jira-cli/llm.md; done
+gh api repos/ankitpokhrel/jira-cli/contents/llm.md \
+  -H 'Accept: application/vnd.github.raw' > .agents/skills/jira-cli/llm.md
 ```
 
 ## Editing the skills
 
-Edit `.claude/skills/` only, then run `bin/sync-skills` to copy it to `.agents/skills/`.
-`bin/sync-skills --check` fails when the copies differ; CI runs it on every push.
+Edit `.agents/skills/`; `.claude/skills` is a symlink to it, so there is nothing to copy. CI
+checks on every push that the symlink is still there.
+
+## Versions
+
+- `v1.0.0`: `foreman-start` for Claude Code workers.
+- Unreleased: provider-neutral `foreman-start`, for Claude, Codex and Kimi workers; `check` shows
+  each worker's provider and flags a Codex worker that has been silent for a while. `.agents/skills/`
+  is the single source, and `merge-to-main` is part of the repo.
 
 ## License
 

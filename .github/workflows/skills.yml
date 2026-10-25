@@ -9,5 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: bin/sync-skills --check
-      - run: python3 .claude/skills/foreman-start/scripts/foreman.py --help > /dev/null
+      # .agents/skills is the only source; .claude/skills must stay a symlink to it.
+      - run: test "$(readlink .claude/skills)" = ../.agents/skills
+      - run: python3 .agents/skills/foreman-start/scripts/foreman.py --help > /dev/null
