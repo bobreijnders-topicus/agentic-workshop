@@ -132,10 +132,14 @@ checks on every push that the symlink is still there.
 
 ## Versions
 
+Every merge into `main` gets the next version tag from CI (`.github/workflows/release.yml`).
+It bumps the patch number by default. Label the PR `release:minor` or `release:major` to bump that
+part instead, or `release:skip` to tag nothing.
+
 - `v1.0.0`: `foreman-start` for Claude Code workers.
-- Unreleased: provider-neutral `foreman-start`, for Claude, Codex and Kimi workers; `check` shows
+- `v1.1.0`: provider-neutral `foreman-start`, for Claude, Codex and Kimi workers; `check` shows
   each worker's provider and flags a Codex worker that has been silent for a while. `.agents/skills/`
-  is the single source, and `merge-to-main` is part of the repo.
+  is the single source, `merge-to-main` is part of the repo, and CI tags every merge into `main`.
 
 ## License
 

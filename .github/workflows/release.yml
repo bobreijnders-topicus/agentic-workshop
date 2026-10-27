@@ -1,0 +1,68 @@
+name: release
+
+# Every merge into main gets the next version tag. Patch by default; a PR label
+# release:minor or release:major bumps that part instead, release:skip tags nothing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+# Two quick merges must not both claim the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tag the next version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          if git tag --points-at HEAD | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "HEAD is already tagged, nothing to do."
+            exit 0
+          fi
+
+          # The PR this push came from, if any: its labels pick the bump, its title the message.
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '.[0] // {}')
+          labels=$(jq -r '.labels // [] | .[].name' <<<"$pr")
+          title=$(jq -r '.title // empty' <<<"$pr")
+          number=$(jq -r '.number // empty' <<<"$pr")
+
+          if grep -qx 'release:skip' <<<"$labels"; then
+            echo "PR is labelled release:skip, no tag."
+            exit 0
+          fi
+
+          last=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          IFS=. read -r major minor patch <<<"${last:-v0.0.0}"
+          major=${major#v}
+
+          if grep -qx 'release:major' <<<"$labels"; then
+            major=$((major + 1)); minor=0; patch=0
+          elif grep -qx 'release:minor' <<<"$labels"; then
+            minor=$((minor + 1)); patch=0
+          else
+            patch=$((patch + 1))
+          fi
+          next="v$major.$minor.$patch"
+
+          message="$next: ${title:-$(git log -1 --format=%s)}"
+          [ -n "$number" ] && message="$message (#$number)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$next" -m "$message"
+          git push origin "$next"
+          echo "Tagged $next (previous: ${last:-none})" | tee -a "$GITHUB_STEP_SUMMARY"
