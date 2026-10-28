@@ -27,21 +27,49 @@ Talk to the user in their language, and write the worker prompts in it too.
 ## The script
 
 `scripts/foreman.py`, next to this file, does the mechanical steps: finding the list, the foreman
-block, the checklist markers, the workspace name, ticket moves, the heartbeat scan, the merge check and the machine check. Call it by its absolute path, as
+block, the checklist markers, the workspace name, ticket moves and comments, the heartbeat scan, the merge check and the machine check. Call it by its absolute path, as
 `python3 <this skill's directory>/scripts/foreman.py <command>`; `--help` lists the commands.
 Write that call into the foreman block as `script:`, so heartbeats and a resumed cycle find it.
 
 Use it instead of doing these steps by hand, and don't edit the block or the markers yourself,
 except for the free-text lines (`lanes:`, `verify:` …), which you set with
-`state set`. It prints a few lines and exits 0 even when a side effect (a rename, a ticket move)
-fails: read the output and act on it. It exits non-zero only when called wrongly, for example with
+`state set`. It prints a few lines and exits 0 even when a side effect (a rename, a ticket move
+or comment) fails: read the output and act on it. It exits non-zero only when called wrongly, for example with
 an item that matches no open line or several; the error lists the candidates.
+
+## Asking the user
+
+Once you have the list, never ask with a tool that blocks your turn until the user answers, such
+as `AskUserQuestion` in Claude Code. While your turn waits, every notification and heartbeat waits
+with it: finished workers stay open and free slots stay empty. Ask in plain text in your reply
+instead: the question, the options, your advice, what waits on it and what runs meanwhile. Then
+carry on in the same turn: start what doesn't wait on the answer, handle the workers. The answer
+arrives as a later message (§7).
+
+Until it is answered, every question:
+- stands as one plain bullet (no checkbox) under `## Waiting on the user`, right below the foreman
+  block: `- <item> · <question> · options: <a> / <b> · advice: <a, and why>`, plus
+  `· default: <a> by <YYYY-MM-DD HH:MM ±HH:MM>` if it has one. `state show` and `check` read it,
+  so keep that heading in English whatever the file's language, and put nothing else under it;
+- goes on the item's ticket, if it has a key: `ticket comment <KEY> '<question, options, advice>'
+  --todo <TODO>`. A failed comment is one line in your report, never a hold-up;
+- opens every message you send the user, in a short **Waiting on you** block with the same points,
+  so they find everything in one place when they come back.
+
+**A default with a deadline** is only for a choice that is easy to undo: a rounding, a label
+text, when a hint disappears. Say "no answer by 18:00 CET, then I take <a>", a few hours ahead,
+and write the deadline with its UTC offset in the bullet. `check` flags it with `!` once it has
+passed: take the default as the answer (§7) and say so in one line. A product choice (direction,
+scope, something users will see work differently, something hard to undo) never gets a default:
+it waits, and you plan around it. Rule of thumb: if the user later picks the other option, is that
+a small follow-up that leaves nothing to clean up? Then a default may do. In doubt, it waits.
 
 ## 1. Find the list, or resume
 
 Run `find-todo [PATH]`. Without a path it takes the newest `TODO*.md` with at least one `- [ ]`
 line, searching `.scratch/` first, then the repo root. Say which file you picked. It finds none?
-Ask the user for the list. That is the only input you ask for.
+Ask the user for the list. That is the only input you ask for before you start; a question about
+a single item goes in plain text while the rest starts (Asking the user).
 
 It reports `cycle: RUNNING` when the file already starts with a `<!-- foreman … -->` block. Then
 resume: run `check` (§6) and handle every listed workspace before starting anything new. Resuming
@@ -94,7 +122,8 @@ don't read the whole codebase.
 - Order within a lane: dependencies first, then the user's order.
 - An item so big that it holds up a lane: split it by the files each half touches, so the halves
   can run side by side.
-- Items that only an answer from the user can unblock wait. Ask, and plan around them.
+- Items that only an answer from the user can unblock wait. Ask without blocking (Asking the user),
+  and plan around them: the rest starts now.
 - Find out which verification stages the project has (`package.json` scripts, CLAUDE.md or
   AGENTS.md) and record them in the foreman block. Then every worker prompt names the right
   command instead of "full verification". A project with fewer stages leaves the rest out.
@@ -212,14 +241,15 @@ waits on you: answer in one line. Lines starting with `!` or `*` need you. Look 
    - what changed;
    - the choices the worker made;
    - how to check it live;
-   - decisions they need to make.
+   - decisions they need to make, asked as in Asking the user.
 5. Findings outside the item are candidate items. Propose them; add them only when the user agrees.
    A finding that belongs to an item that is still open goes straight into that item's text, so
    its worker inherits it.
 6. Start the next item that doesn't conflict with what is still running.
 
 **Between items**, give a short status when the user hasn't heard from you in a while. Never
-invent a worker's result.
+invent a worker's result. While a question is open, every status and report starts with the
+**Waiting on you** block.
 
 ## 7. While the cycle runs
 
@@ -228,9 +258,11 @@ invent a worker's result.
   `name <done> <total>`. An item the user drops lowers `total` the same way.
 - **A docs-only item you do yourself:** once its PR is merged, `state done <TODO> <item> --pr <n>`,
   then count it and run `name`, just as in §6.
-- **The user answers a decision:** pass it to the running worker (`send_agent_prompt`, phrased as
-  a continuation, §6), or record it in the item for the one that follows. Record product
-  decisions where the project keeps them.
+- **The user answers a decision, or its default's deadline passed:** pass it to the running worker
+  (`send_agent_prompt`, phrased as a continuation, §6), or record it in the item for the one that
+  follows. Record product decisions where the project keeps them. Remove its bullet from
+  `Waiting on the user`, put the decision on the item's ticket with `ticket comment`, and start the
+  item if a slot is free.
 - **Deploying:** only when the user asks. Use the project's deploy procedure if it has one, and
   verify that what is live is the build you made.
 - **A test run fails on the environment** (full disk, overloaded machine), not on the code:
@@ -254,7 +286,8 @@ When the last item is ticked:
    - every PR;
    - the result of the deploy-level verification;
    - what is live and what isn't;
-   - the open decisions;
+   - the open decisions, as they stand under `Waiting on the user`. Without heartbeats a default
+     no longer applies itself: they wait for the user;
    - the candidate items.
 
 ## 9. Worker prompt template
@@ -321,12 +354,14 @@ of a TODO list. A foreman agent coordinates the list; you deliver this one item,
 **A. Check (every 10 min)**
 
 ```
-Foreman check: run `<script call> check <TODO path>`. NO CHANGE? Answer in one line. Otherwise
-handle every line marked ! or *: done (a final report with a merged PR, or a failed merge)? Close
-it out per foreman-start §6 (verify-pr, archive, state done or state unmark) and start the next
+Foreman check: run `<script call> check <TODO path>`. NO CHANGE? Answer in one line; it already
+names what waits on the user. Otherwise handle every line marked ! or *: done (a final report with
+a merged PR, or a failed merge)? Close it out per foreman-start §6 (verify-pr, archive, state done or state unmark) and start the next
 item. Stuck on a permission? Inspect it and answer. Idle with nothing running? Nudge it, phrased
-as a continuation. All idle at once without a report? Treat it as a daemon restart (§6). Never
-archive <own workspace id>. Don't deploy.
+as a continuation. All idle at once without a report? Treat it as a daemon restart (§6). A
+DEFAULT DUE? Take it as the user's answer (§7) and say so in one line. Ask the user only in plain
+text, never with a tool that blocks your turn, and open every report with the Waiting on you
+block while a question is open (Asking the user). Never archive <own workspace id>. Don't deploy.
 ```
 
 **B. Resume (every 5 h)**
@@ -336,5 +371,5 @@ Foreman resume check: run `<script call> check <TODO path>`. Did any running wor
 a usage or token limit? Resume it with send_agent_prompt ("Continue where you left off"). If that
 fails and its worktree holds uncommitted work, start an agent of another provider in the same
 workspace with a handover prompt (what is done, what remains) and record it with `state start …
---agent <new id> --no-ticket`; archive and start fresh only when the worktree is clean. Then apply the check in foreman-start §6. Never archive <own workspace id>.
+--agent <new id> --no-ticket`; archive and start fresh only when the worktree is clean. Then apply the check in foreman-start §6, including a DEFAULT DUE (§7). Never ask with a tool that blocks your turn. Never archive <own workspace id>.
 ```

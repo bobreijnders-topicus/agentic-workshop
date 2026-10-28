@@ -2,16 +2,20 @@
 """Deterministic helpers for the foreman-start skill.
 
 Every subcommand prints a few short lines meant for an agent to read, and exits 0 unless it was
-called wrongly. A failed side effect (a ticket move, a workspace rename) is reported in one line
-and never stops the cycle.
+called wrongly. A failed side effect (a ticket move or comment, a workspace rename) is reported in
+one line and never stops the cycle. No command waits on stdin, and every outside call has a timeout.
 
   find-todo  [PATH]                          pick the TODO file, say whether a cycle runs in it
   state      show|set|start|unmark|done  TODO ...
   name       [DONE TOTAL] [--ws ID]          name the own workspace `Foreman (DONE/TOTAL)`, or read it
-  ticket     detect | move KEY start|done [--todo TODO]
-  check      TODO                            one scan of every running workspace
+  ticket     detect | move KEY start|done | comment KEY TEXT   [--todo TODO]
+  check      TODO                            one scan of every running workspace and open question
   verify-pr  N [--todo TODO]                 is PR #N really merged, and what did it change
   capacity                                   cores, memory, /tmp, running agents, a parallel limit
+
+Open questions to the user are plain bullets under a `## Waiting on the user` heading in the TODO
+file. `state show` lists them; `check` flags one whose `default: <option> by YYYY-MM-DD HH:MM +HH:MM`
+has passed.
 
 The run's count lives only in the foreman's own session and in its workspace name; nothing here
 stores it.
@@ -24,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -36,6 +41,9 @@ ITEM_RE = re.compile(r"^([-*] \[)([ xX])(\]\s+)(.*)$")  # top level only; sub-it
 RUNNING_RE = re.compile(r"\s*← running:.*$")
 KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]+-\d+\b")
 OWN_KEY_RE = re.compile(r"^\W*([A-Z][A-Z0-9]+-\d+)\b|/browse/([A-Z][A-Z0-9]+-\d+)\b")
+WAITING_RE = re.compile(r"^#+\s*Waiting on the user\b", re.I)
+DEFAULT_RE = re.compile(r"(?:^|·)\s*default\s*:\s*([^·]+?)\s+by\s+(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2})?\s*"
+                        r"(Z|(?:UTC|GMT)?\s*[+-]\d{2}:?\d{2}|UTC|GMT)(?![\d:+-])", re.I)
 JIRA_ENV = Path.home() / ".config/jira-cli/env"
 # Codex's auto-reviewer denies escalations without a paseo permission request; a Codex worker
 # running this long without an update may be stuck on one.
@@ -47,16 +55,26 @@ def out(*lines):
         print(line)
 
 
-def run(cmd, timeout=60, shell=False):
-    """Run a command; return (exit code, stdout, stderr). A missing binary is exit 127."""
+def run(cmd, timeout=60, shell=False, input=None):
+    """Run a command; return (exit code, stdout, stderr). A missing binary is exit 127, a timeout
+    124. stdin is `input` on a pipe that closes, or else /dev/null, so nothing waits on it; a
+    timeout kills the whole process group, so a child of the shell can't hold the pipes open."""
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, shell=shell,
-                           executable="/bin/bash" if shell else None)
-        return p.returncode, p.stdout.strip(), p.stderr.strip()
+        p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL if input is None else subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, shell=shell,
+                             executable="/bin/bash" if shell else None, start_new_session=True)
     except FileNotFoundError:
         return 127, "", f"{cmd[0]}: not found"
+    try:
+        so, se = p.communicate(input, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return 124, "", "timed out"
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+            p.communicate(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return 124, "", f"timed out after {timeout} s"
+    return p.returncode, so.strip(), se.strip()
 
 
 def item_key(text):
@@ -69,6 +87,26 @@ def item_key(text):
 def one_line(text, limit=300):
     text = " ".join(text.split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def default_of(question):
+    """None for a question without a default, else (option, deadline); the deadline is None when
+    it can't be read. Only a choice that is easy to undo gets a default."""
+    if not re.search(r"\bdefault\s*:", question, re.I):
+        return None
+    m = DEFAULT_RE.search(question)
+    if not m:
+        return "?", None
+    tz = re.sub(r"^(UTC|GMT)\s*", "", m.group(4).upper()) or "Z"
+    tz = "+00:00" if tz == "Z" else tz if ":" in tz else f"{tz[:3]}:{tz[3:]}"
+    try:
+        return m.group(1), datetime.fromisoformat(f"{m.group(2)}T{m.group(3)}{tz}")
+    except ValueError:
+        return m.group(1), None
+
+
+def question_label(question):
+    return item_key(question) or one_line(question.split(" · ")[0].strip("*_ "), 40)
 
 
 # ---------------------------------------------------------------------------- TODO file
@@ -151,6 +189,19 @@ class Todo:
             lst = "".join(f"\n  line {it[0] + 1}: {one_line(it[2], 100)}" for it in (hits or cands))
             sys.exit(f"error: {what} {'open ' if open_only else ''}items match {query!r}:{lst}")
         return hits[0]
+
+    def waiting(self):
+        """The open questions: one plain bullet each under `## Waiting on the user`, indented
+        lines joined to it. The next heading or checklist item ends the section. [(line index, text)]"""
+        res, inside = [], False
+        for i, line in enumerate(self.text.split("\n")):
+            if line.startswith("#") or ITEM_RE.match(line):
+                inside = bool(WAITING_RE.match(line))
+            elif inside and re.match(r"[-*] ", line):
+                res.append([i, line[2:].strip()])
+            elif inside and res and line[:1].isspace() and line.strip():
+                res[-1][1] += " " + line.strip()
+        return [(i, x) for i, x in res]
 
     def replace_line(self, idx, new):
         lines = self.text.split("\n")
@@ -247,16 +298,30 @@ def cmd_find_todo(a):
 def cmd_state(a):
     t = Todo(a.todo)
     if a.action == "show":
-        items = t.items()
+        items, waiting = t.items(), t.waiting()
+        now = datetime.now(timezone.utc)
         if a.json:
+            qs = []
+            for i, x in waiting:
+                d = default_of(x)
+                qs.append({"line": i + 1, "text": x, "default": d and d[0],
+                           "deadline": d[1].isoformat() if d and d[1] else None,
+                           "due": bool(d and d[1] and d[1] <= now)})
             print(json.dumps({
                 "todo": str(t.path), "block": t.block(), "own_workspace": t.own_workspace(),
                 "items": [{"line": i + 1, "done": d, "text": x, "running": r} for i, d, x, r in items],
+                "waiting": qs,
             }, indent=1, ensure_ascii=False))
             return
         out(f"todo: {t.path}", f"own workspace: {t.own_workspace() or '?'}")
         for i, d, x, r in items:
             out(f"  {'x' if d else ('>' if r else ' ')} line {i + 1}: {one_line(x, 90)}" + (f"  {r}" if r else ""))
+        if waiting:
+            out("waiting on the user:")
+        for i, x in waiting:
+            d = default_of(x)
+            due = "  ← default due" if d and d[1] and d[1] <= now else ""
+            out(f"  ? line {i + 1}: {one_line(x, 200)}{due}")
         return
 
     if a.action == "set":
@@ -300,10 +365,10 @@ def move_item_ticket(t, text, which, skip):
 
 # ---------------------------------------------------------------------------- ticket
 
-def jira_sh(args):
+def jira_sh(args, input=None):
     """Run jira with the env-file token loaded when the shell did not load it."""
     load = f'[ -n "${{JIRA_API_TOKEN:-}}" ] || {{ [ -f {JIRA_ENV} ] && . {JIRA_ENV}; }}; '
-    return run(load + "jira " + " ".join(_q(x) for x in args), shell=True, timeout=60)
+    return run(load + "jira " + " ".join(_q(x) for x in args), shell=True, timeout=60, input=input)
 
 
 def _q(s):
@@ -327,19 +392,47 @@ def cmd_ticket(a):
         tracker, who = detect_tracker()
         return out(f"tracker: {tracker}" + (f" ({who})" if who else "")
                    + ("" if tracker != "none" else " → say so once and carry on; don't install or log in"))
+    if a.action == "comment":
+        # jira-cli turns a bare number into a key of its default project: take only a full key.
+        if not KEY_RE.fullmatch((a.key or "").upper()) or not (a.which or "").strip():
+            sys.exit("usage: foreman.py ticket comment KEY TEXT [--todo TODO]  (KEY like ABC-123; TEXT quoted)")
+        return ticket_comment(a.key.upper(), a.which, Todo(a.todo) if a.todo else None)
     if not a.key or a.which not in ("start", "done"):
         sys.exit("usage: foreman.py ticket move KEY start|done [--todo TODO]")
     ticket_move(a.key, a.which, Todo(a.todo) if a.todo else None)
 
 
+def tracker_of(todo):
+    """The block's tracker, or the one `detect` finds when the block names none."""
+    tracker = todo.tracker()[0] if todo is not None else None
+    return tracker if tracker in ("jira-cli", "acli", "none") else detect_tracker()[0]
+
+
+def ticket_comment(key, text, todo=None):
+    tracker = tracker_of(todo)
+    if tracker == "none":
+        return out(f"ticket {key}: no tracker, no comment")
+    if tracker == "jira-cli":
+        # jira-cli reads stdin whenever it is not a terminal, even with the body as an argument,
+        # so an open stdin hangs it. Give it the body on a pipe that closes. No REST fallback:
+        # after a timeout the comment may be in already, and a second route would post it twice.
+        code, so, se = jira_sh(["issue", "comment", "add", key, "--no-input", "--template", "-"], input=text)
+    else:
+        code, so, se = run(["acli", "jira", "workitem", "comment", "create", "--key", key, "--body", text])
+    if code == 0:
+        return out(f"ticket {key}: comment added ({tracker})")
+    if code == 124:
+        return out(f"ticket {key}: comment {se} ({tracker}); it may be there anyway: look at the "
+                   "ticket before you post it again. Don't hold up the cycle.")
+    out(f"ticket {key}: comment FAILED ({tracker}): {one_line(se or so, 240)}",
+        "  → it stands in the TODO file and in your message anyway. Don't hold up the cycle.")
+
+
 def ticket_move(key, which, todo=None):
-    tracker = None
     state = {"start": "In Progress", "done": "Done"}[which]
     if todo is not None:
-        tracker, states = todo.tracker()
-        state = states.get(which) or state
-    if tracker not in ("jira-cli", "acli", "none"):
-        tracker, _ = detect_tracker()
+        state = todo.tracker()[1].get(which) or state
+    tracker = tracker_of(todo)
     if tracker == "none":
         return out(f"ticket {key}: no tracker, not moved")
 
@@ -390,6 +483,23 @@ def minutes_since(iso):
     return int((datetime.now(timezone.utc) - then).total_seconds() // 60)
 
 
+def check_waiting(t):
+    """(lines that need the foreman, labels of the other open questions)"""
+    flags, open_ = [], []
+    now = datetime.now(timezone.utc)
+    for i, text in t.waiting():
+        label, d = question_label(text), default_of(text)
+        if d and d[1] and d[1] <= now:
+            flags.append(f"! {label}: DEFAULT DUE since {d[1]:%Y-%m-%d %H:%M %z} → take {d[0]!r} as "
+                         "the user's answer (§7) and say so in one line")
+        elif d and not d[1]:
+            flags.append(f"* {label}: default without a readable deadline (line {i + 1}) → write it "
+                         "as `default: <option> by YYYY-MM-DD HH:MM +HH:MM`")
+        else:
+            open_.append(label)
+    return flags, open_
+
+
 def cmd_check(a):
     t = Todo(a.todo)
     running = []
@@ -398,12 +508,16 @@ def cmd_check(a):
             ws = re.search(r"wks_\w+", r)
             ag = re.search(r"agent\s+([0-9a-f-]{6,})", r)
             running.append((i, text, ws.group(0) if ws else None, ag.group(1) if ag else None))
+    wait_flags, wait_open = check_waiting(t)
+    wait_note = f"waiting on the user: {', '.join(wait_open)}" if wait_open else ""
     if not running:
-        return out("running: none → start the next item, or finish the cycle (§8) when all are ticked")
+        return out("running: none → start the next item, or finish the cycle (§8) when all are ticked",
+                   *wait_flags, *(["  " + wait_note] if wait_note else []))
 
     workspaces, err = paseo_json(["workspace", "ls"])
     if workspaces is None:
-        return out(f"paseo unreachable ({err}): is the daemon down? check its log, then resume (§6)")
+        return out(f"paseo unreachable ({err}): is the daemon down? check its log, then resume (§6)",
+                   *wait_flags)
     live_ws = {w.get("workspaceId") for w in workspaces}
 
     lines, idle_no_pr, actionable = [], 0, False
@@ -461,8 +575,12 @@ def cmd_check(a):
                      "resume each with what was running (§6)")
     elif idle_no_pr:
         lines.append("  idle without a PR: waiting on a background step, or stopped → nudge as a continuation (§6)")
-    if not actionable:
-        lines.insert(0, f"NO CHANGE: all {len(running)} workers running, no permission pending")
+    lines.extend(wait_flags)
+    if not (actionable or wait_flags):
+        lines.insert(0, f"NO CHANGE: all {len(running)} workers running, no permission pending"
+                     + (f" · {wait_note}" if wait_note else ""))
+    elif wait_note:
+        lines.append("  " + wait_note)
     out(*lines)
 
 
@@ -581,12 +699,15 @@ def main():
     p.add_argument("--ws", help="workspace id; default: the one whose cwd is this directory")
     p.set_defaults(fn=cmd_name)
 
-    p = sub.add_parser("ticket", help="detect the tracker, or move a ticket")
-    p.add_argument("action", choices=["detect", "move"])
-    p.add_argument("key", nargs="?"); p.add_argument("which", nargs="?"); p.add_argument("--todo")
+    p = sub.add_parser("ticket", help="detect the tracker, move a ticket, or comment on it")
+    p.add_argument("action", choices=["detect", "move", "comment"])
+    p.add_argument("key", nargs="?")
+    p.add_argument("which", nargs="?", metavar="start|done|TEXT",
+                   help="move: start or done; comment: the text, as one quoted argument")
+    p.add_argument("--todo")
     p.set_defaults(fn=cmd_ticket)
 
-    p = sub.add_parser("check", help="scan every running workspace")
+    p = sub.add_parser("check", help="scan every running workspace and open question")
     p.add_argument("todo")
     p.set_defaults(fn=cmd_check)
 

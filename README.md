@@ -37,7 +37,7 @@ workspace is named after the run's progress, such as `Foreman (3/7)`. The forema
 count in its own session; it isn't stored in the TODO file or anywhere else.
 
 The mechanical steps run through one script, `scripts/foreman.py`, rather than through the
-model: picking the TODO file, writing the block and the checklist markers, renaming the workspace, moving tickets, the heartbeat scan of all workers, checking that a PR is
+model: picking the TODO file, writing the block and the checklist markers, renaming the workspace, moving and commenting on tickets, the heartbeat scan of all workers, checking that a PR is
 really merged, and checking the machine's free RAM, which sets the parallel limit (at most three, about 1.5 GiB each). Run it with `--help`
 for the commands.
 
@@ -91,7 +91,10 @@ newest `TODO*.md` with open items, looking in `.scratch/` first and then the rep
 
 While it runs you can:
 - add items to the list;
-- answer the decisions it brings up;
+- answer the decisions it brings up. It asks them in plain text and keeps the other workspaces
+  going meanwhile. Open questions stand under `## Waiting on the user` in the list, on the item's
+  ticket, and at the top of each of its messages. A small choice that is easy to undo may get a
+  default with a deadline; a product choice always waits for you;
 - ask it to deploy. It never deploys on its own.
 
 ## merge-to-main
