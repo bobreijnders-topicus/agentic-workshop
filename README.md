@@ -4,7 +4,7 @@ Skills for running coding agents as a team.
 
 ## foreman-start
 
-One agent acts as the **foreman** over a markdown TODO checklist. Every open item gets its own
+One agent acts as the **foreman** over a markdown or Jira TODO checklist. Every open item gets its own
 [paseo](https://paseo.sh) workspace: a git worktree off the default branch, with
 its own agent. At most three workspaces run at a time, fewer when the machine's free RAM or the project's
 instructions call for it.
